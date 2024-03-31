@@ -1,0 +1,716 @@
+//Raw Data Layer: Part 1
+
+CREATE or replace STORAGE INTEGRATION Snow_OBJ
+  TYPE = EXTERNAL_STAGE
+  STORAGE_PROVIDER = 'S3'
+  ENABLED = TRUE
+  STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::590183746849:role/SnowflakeS3Role'
+  STORAGE_ALLOWED_LOCATIONS = ('s3://haneesha-telecomcapstone/');
+
+DESC INTEGRATION Snow_OBJ;
+
+GRANT CREATE STAGE ON SCHEMA public TO ROLE ACCOUNTADMIN;
+
+GRANT USAGE ON INTEGRATION Snow_OBJ TO ROLE ACCOUNTADMIN;
+
+create or replace file format mycsvformat
+    type = csv
+    field_delimiter = ','
+    skip_header = 1
+    field_optionally_enclosed_by = '"'
+    null_if = ('NULL','null')
+    EMPTY_FIELD_AS_NULL = TRUE;
+    
+//Create External Stage:   
+
+CREATE or replace STAGE TELECOM_CAPSTONE.RAW_TELECOM.my_csv_stage
+  STORAGE_INTEGRATION = Snow_OBJ
+  URL = 's3://haneesha-telecomcapstone'
+  file_format=mycsvformat;
+
+Create or replace database telecom_capstone;
+use database telecom_capstone;
+
+create or replace schema raw_telecom;
+use schema raw_telecom;
+
+//Creating Tables:
+create or replace table Billing_data_raw (
+    bill_date DATE,
+    subscriberNumber NUMBER,
+    mobile_number NUMBER,
+    total_outstanding_amount DECIMAL(18, 2),
+    create_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    filename STRING,
+    filedatetime TIMESTAMP_NTZ
+);
+
+create or replace table Subscription_data_raw(
+
+SubscriberNumber NUMBER,
+Name VARCHAR,
+Address VARCHAR,
+sim_number NUMBER,
+mobile_number NUMBER,
+plan_for_sim VARCHAR,
+area_from_which_sim_is_purchased VARCHAR,
+status_of_sim_purchased VARCHAR,
+email_id VARCHAR,
+subscriber_type VARCHAR,
+Date_time TIMESTAMP_NTZ,
+create_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+file_name VARCHAR,
+filedatetime TIMESTAMP_NTZ
+) ;
+
+create or replace table Payment_data_raw(
+    subscriberNumber NUMBER,
+    subscriber_type VARCHAR(20),
+    mode_of_payment VARCHAR(50),
+    date_payment DATE,
+    amount DECIMAL(18, 2),
+    create_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    filename VARCHAR(255),
+    filedatetime TIMESTAMP_NTZ
+);
+
+Create or replace TABLE Cdr_data_raw (
+    mobile_number NUMBER,
+    account_length NUMBER,
+    vmail_message NUMBER,
+    day_mins DECIMAL(10, 2),
+    day_calls NUMBER,
+    day_charge DECIMAL(10, 2),
+    eve_mins DECIMAL(10, 2),
+    eve_calls NUMBER,
+    eve_charge DECIMAL(10, 2),
+    night_mins DECIMAL(10, 2),
+    night_calls NUMBER,
+    night_charge DECIMAL(10, 2),
+    intl_mins DECIMAL(10, 2),
+    intl_calls NUMBER,
+    intl_charge DECIMAL(10, 2),
+    custServ_calls NUMBER,
+    churn BOOLEAN,
+    create_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    filename STRING,
+    filedatetime TIMESTAMP_NTZ
+);
+
+//Create Streams
+create or replace stream subscriber_table_changes
+ON TABLE subscription_data_raw;
+
+create or replace stream payment_data_changes
+ON TABLE payment_data_raw;
+
+create or replace stream billing_data_changes
+ON TABLE billing_data_raw;
+
+create or replace stream cdr_data_changes
+ON TABLE cdr_data_raw;
+
+// Raw Data Layer -2
+//Copying Billing Data:
+
+COPY INTO billing_data_raw (
+    bill_date,
+    subscriberNumber,
+    mobile_number,
+    total_outstanding_amount,
+    create_timestamp,
+    filename,
+    filedatetime)
+    from (select t.$1,t.$2,t.$3,t.$4, CURRENT_TIMESTAMP() as create_timestamp,METADATA$FILENAME,METADATA$FILE_LAST_MODIFIED
+FROM @my_csv_stage/billingdata.csv (file_format => mycsvformat) t)
+ON_ERROR = 'CONTINUE';
+
+select *from billing_data_raw;
+
+//Copying payment Data:
+
+COPY INTO payment_data_raw (
+    subscriberNumber,
+    subscriber_type,
+    mode_of_payment,
+    date_payment,
+    amount,
+    create_timestamp,
+    filename,
+    filedatetime
+)
+    from (select t.$1,t.$2,t.$3,t.$4,t.$5, CURRENT_TIMESTAMP() as create_timestamp,METADATA$FILENAME,METADATA$FILE_LAST_MODIFIED
+FROM @my_csv_stage/paymentdata.csv (file_format => mycsvformat) t)
+ON_ERROR = 'CONTINUE';
+
+select *from payment_data_raw;
+
+//Copying CDR Data
+
+COPY INTO Cdr_data_raw(
+     mobile_number,
+    account_length,
+    vmail_message,
+    day_mins,
+    day_calls,
+    day_charge,
+    eve_mins,
+    eve_calls,
+    eve_charge,
+    night_mins,
+    night_calls,
+    night_charge,
+    intl_mins,
+    intl_calls,
+    intl_charge,
+    custServ_calls,
+    churn,
+    create_timestamp,
+    filename,
+    filedatetime
+)
+from (select t.$1,t.$2,t.$3,t.$4,t.$5,t.$6,t.$7,t.$8,t.$9,t.$10,t.$11,t.$12,t.$13,t.$14,t.$15,t.$16,t.$17, CURRENT_TIMESTAMP() as create_timestamp,METADATA$FILENAME,
+METADATA$FILE_LAST_MODIFIED FROM @my_csv_stage/cdrcalldetails.csv (file_format => mycsvformat) t)
+ON_ERROR = 'CONTINUE';
+
+select * from cdr_data_raw;
+
+CREATE OR REPLACE FILE FORMAT myjsonformat
+    TYPE = JSON
+    STRIP_OUTER_ARRAY = TRUE;
+
+// Copying Subscription Data 
+
+copy into subscription_data_raw from (select $1:SubscriberNumber::NUMBER,
+$1:Name::VARCHAR,$1:Address::VARCHAR,$1:sim_number::NUMBER,$1:mobile_number::NUMBER,
+$1:plan_for_sim::VARCHAR,$1:area_from_which_sim_is_purchased::VARCHAR,$1:status_of_sim_purchased::VARCHAR,$1:email_id::VARCHAR,
+$1:subscriber_type::VARCHAR,
+$1:Date_time::TIMESTAMP_NTZ,
+ CURRENT_TIMESTAMP() as create_timestamp,METADATA$FILENAME,METADATA$FILE_LAST_MODIFIED  FROM @my_csv_stage/SubscriptionData.json (file_format => myjsonformat)) 
+ON_ERROR = 'CONTINUE';
+
+select * from subscription_data_raw;
+
+//Bronze Layer: Part 1
+
+-- Create schema if not exists
+create or replace SCHEMA bronze_telecom;
+-- Use the newly created schema
+USE SCHEMA bronze_telecom;
+
+show tables in schema bronze_telecom;
+
+create or replace table billing_data_bronze (
+    bill_date DATE,
+    subscriberNumber NUMBER,
+    mobile_number NUMBER,
+    total_outstanding_amount DECIMAL,
+    create_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    filename STRING,
+    filedatetime TIMESTAMP_NTZ
+);
+
+create or replace table subscription_data_bronze (
+    SubscriberNumber NUMBER,
+    Name VARCHAR,
+    Address VARCHAR,
+    sim_number NUMBER,
+    mobile_number NUMBER,
+    plan_for_sim VARCHAR,
+    area_from_which_sim_is_purchased VARCHAR,
+    status_of_sim_purchased VARCHAR,
+    email_id VARCHAR,
+    subscriber_type VARCHAR,
+    Date_time TIMESTAMP_NTZ,
+    create_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    file_name VARCHAR,
+    filedatetime TIMESTAMP_NTZ
+);
+
+create or replace table payment_data_bronze (
+    subscriberNumber NUMBER,
+    subscriber_type VARCHAR,
+    mode_of_payment VARCHAR,
+    date_payment DATE,
+    amount DECIMAL,
+    create_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    filename VARCHAR,
+    filedatetime TIMESTAMP_NTZ
+);
+
+create or replace table cdr_data_bronze (
+    mobile_number NUMBER,
+    account_length NUMBER,
+    vmail_message NUMBER,
+    day_mins DECIMAL,
+    day_calls NUMBER,
+    day_charge DECIMAL,
+    eve_mins DECIMAL,
+    eve_calls NUMBER,
+    eve_charge DECIMAL,
+    night_mins DECIMAL,
+    night_calls NUMBER,
+    night_charge DECIMAL,
+    intl_mins DECIMAL,
+    intl_calls NUMBER,
+    intl_charge DECIMAL,
+    custServ_calls NUMBER,
+    churn BOOLEAN,
+    create_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    filename STRING,
+    filedatetime TIMESTAMP_NTZ
+);
+
+create or replace stream subscriber_table_changes
+ON TABLE subscription_data_bronze;
+
+create or replace stream payment_data_changes
+ON TABLE payment_data_bronze;
+
+create or replace stream billing_data_changes
+ON TABLE billing_data_bronze;
+
+create or replace stream cdr_data_changes
+ON TABLE cdr_data_bronze;
+
+//Bronze Layer 2
+create or replace temporary table billing_data_bronze_tmp AS (
+    select *
+    from billing_data_bronze
+    where subscriberNumber IS NOT NULL AND mobile_number IS NOT NULL
+);
+
+create or replace temporary table  subscription_data_bronze_tmp AS (
+    select *
+    FROM subscription_data_bronze
+    WHERE subscriberNumber IS NOT NULL AND mobile_number IS NOT NULL
+);
+
+create or replace temporary table cdr_data_bronze_tmp AS (
+    select *
+    FROM cdr_data_bronze
+    WHERE mobile_number IS NOT NULL
+);
+
+
+create or replace temporary table  payment_data_bronze_tmp AS (
+    select *
+    FROM payment_data_bronze
+    WHERE subscriberNumber IS NOT NULL
+);
+
+INSERT INTO billing_data_bronze_tmp
+SELECT *
+    FROM raw_telecom.billing_data_raw
+    WHERE subscriberNumber IS NOT NULL AND mobile_number IS NOT NULL;
+
+INSERT INTO subscription_data_bronze_tmp
+SELECT *
+    FROM raw_telecom.subscription_data_raw
+    WHERE subscriberNumber IS NOT NULL AND mobile_number IS NOT NULL;
+
+INSERT INTO cdr_data_bronze_tmp
+SELECT *
+    FROM raw_telecom.cdr_data_raw
+    WHERE mobile_number IS NOT NULL;
+
+INSERT INTO payment_data_bronze_tmp
+SELECT *
+    FROM raw_telecom.payment_data_raw
+    WHERE subscriberNumber IS NOT NULL;
+
+-- Masking and Tokenizing Subscription Data
+UPDATE subscription_data_bronze_tmp
+SET
+    -- Masking the name column
+    name = CONCAT(SUBSTRING(name, 1, 1), REPEAT('*', LENGTH(name) - 1)),
+    
+    -- Masking the address column
+    address = CONCAT(SUBSTRING(address, 1, 5), REPEAT('*', LENGTH(address) - 5)),
+    
+    -- Tokenizing the mobile_number column using MD5
+    mobile_number = MD5_NUMBER_LOWER64(mobile_number),
+    
+    -- Masking the email_id column
+    email_id = CONCAT(SUBSTRING(email_id, 1, POSITION('@' IN email_id) - 1), REPEAT('*', LENGTH(email_id) - POSITION('@' IN email_id)));
+
+select *from subscription_data_bronze_tmp;
+
+-- Tokenizing the mobile_number column using MD5
+UPDATE cdr_data_bronze_tmp
+SET
+    mobile_number = MD5_NUMBER_LOWER64(mobile_number);
+
+select *from cdr_data_bronze_tmp;
+
+-- Tokenizing the mobile_number column using MD5
+UPDATE billing_data_bronze_tmp
+SET
+    mobile_number = MD5_NUMBER_LOWER64(mobile_number);
+
+select *from billing_data_bronze_tmp;
+
+-- Insert masked and tokenized data into subscription_data_bronze
+insert into subscription_data_bronze
+select *from subscription_data_bronze_tmp;
+
+select *from subscription_data_bronze;
+
+-- Insert masked and tokenized data into payment_data_bronze
+insert into payment_data_bronze
+select *from payment_data_bronze_tmp;
+
+select *from payment_data_bronze;
+
+-- Insert masked and tokenized data into cdr_data_bronze
+insert into cdr_data_bronze
+select *from cdr_data_bronze_tmp;
+
+select *from cdr_data_bronze;
+
+-- Insert masked and tokenized data into billing_data_bronze
+insert into billing_data_bronze
+select *from billing_data_bronze_tmp;
+
+select *from billing_data_bronze;
+
+//Silver Layer Part I
+
+create or replace schema silver_telecom;
+
+use schema silver_telecom;
+
+show tables in schema silver_telecom;
+
+create or replace table billing_data_silver (
+    bill_date DATE,
+    subscriberNumber NUMBER,
+    mobile_number NUMBER,
+    total_outstanding_amount DECIMAL,
+    create_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    filename STRING,
+    filedatetime TIMESTAMP_NTZ
+);
+
+create or replace table subscription_data_silver (
+SubscriberNumber NUMBER,
+Name VARCHAR,
+Address VARCHAR,
+sim_number NUMBER,
+mobile_number NUMBER,
+plan_for_sim VARCHAR,
+area_from_which_sim_is_purchased VARCHAR,
+status_of_sim_purchased VARCHAR,
+email_id VARCHAR,
+subscriber_type VARCHAR,
+Date_time TIMESTAMP_NTZ,
+create_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+file_name VARCHAR,
+filedatetime TIMESTAMP_NTZ,
+    end_date TIMESTAMP_NTZ,
+    hist_flag BOOLEAN
+);
+
+create or replace table personal_data_silver (
+    SubscriberNumber NUMBER,
+    Name VARCHAR,
+    Address VARCHAR,
+    email_id VARCHAR,
+    create_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+);
+
+create or replace table payment_data_silver (
+    subscriberNumber NUMBER,
+    subscriber_type VARCHAR,
+    mode_of_payment VARCHAR,
+    date_payment DATE,
+    amount DECIMAL,
+    create_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    filename VARCHAR,
+    filedatetime TIMESTAMP_NTZ
+);
+
+create or replace table cdr_data_silver (
+    mobile_number NUMBER,
+    account_length NUMBER,
+    vmail_message NUMBER,
+    day_mins DECIMAL,
+    day_calls NUMBER,
+    day_charge DECIMAL,
+    eve_mins DECIMAL,
+    eve_calls NUMBER,
+    eve_charge DECIMAL,
+    night_mins DECIMAL,
+    night_calls NUMBER,
+    night_charge DECIMAL,
+    intl_mins DECIMAL,
+    intl_calls NUMBER,
+    intl_charge DECIMAL,
+    custServ_calls NUMBER,
+    churn BOOLEAN,
+    create_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    filename STRING,
+    filedatetime TIMESTAMP_NTZ
+);
+
+create or replace stream subscriber_table_changes ON TABLE subscription_data_silver;
+
+create or replace stream  payment_data_changes ON TABLE payment_data_silver;
+
+create or replace stream  billing_data_changes ON TABLE billing_data_silver;
+
+create or replace stream  cdr_data_changes ON TABLE cdr_data_silver;
+
+create or replace stream personal_data_changes ON TABLE personal_data_silver;
+
+//Silver Layer Part II
+
+select * from silver_telecom.payment_data_changes;
+
+INSERT INTO payment_data_silver
+SELECT 
+ subscriberNumber, subscriber_type, mode_of_payment, date_payment, amount, create_timestamp, filename, filedatetime
+
+FROM bronze_telecom.payment_data_changes;
+
+INSERT INTO cdr_data_silver
+SELECT mobile_number, account_length, vmail_message, day_mins, day_calls, day_charge, eve_mins, eve_calls, eve_charge, night_mins, night_calls, night_charge, intl_mins, intl_calls, intl_charge, custServ_calls, churn, create_timestamp, filename, filedatetime 
+FROM bronze_telecom.cdr_data_changes;
+
+INSERT INTO billing_data_silver
+SELECT bill_date,subscriberNumber,mobile_number,total_outstanding_amount,create_timestamp,filename,filedatetime 
+FROM bronze_telecom.billing_data_changes;
+
+MERGE INTO TELECOM_CAPSTONE.SILVER_TELECOM.SUBSCRIPTION_DATA_SILVER AS target
+USING bronze_telecom.subscriber_table_changes AS source
+ON target.SubscriberNumber = source.SubscriberNumber AND target.mobile_number = source.mobile_number
+
+-- When records match based on subscriber number and mobile number
+WHEN MATCHED THEN
+    -- Update existing record
+    UPDATE SET
+        target.end_date = '9999-12-31T11:59:59 Z',
+        target.hist_flag = FALSE
+
+WHEN NOT MATCHED THEN INSERT 
+    -- Insert a new record with values from subscriber_table_changes
+     (
+        target.SubscriberNumber,
+target.Name,
+target.Address,
+target.sim_number,
+target.mobile_number,
+target.plan_for_sim,
+target.area_from_which_sim_is_purchased,
+target.status_of_sim_purchased,
+target.email_id,
+target.subscriber_type,
+target.Date_time,
+target.create_timestamp,
+target.file_name,
+target.filedatetime,
+target.end_date,
+target.hist_flag
+    )
+    VALUES (
+        source.SubscriberNumber,
+        source.Name,
+        source.Address,
+        source.sim_number,
+        source.mobile_number,
+        source.plan_for_sim,
+        source.area_from_which_sim_is_purchased,
+        source.status_of_sim_purchased,
+        source.email_id,
+        source.subscriber_type,
+        source.Date_time,
+        CURRENT_TIMESTAMP(),
+        source.file_name,
+        source.filedatetime,
+        '9999-12-31T11:59:59 Z',
+        false
+    );
+
+select * from subscription_data_silver;
+    
+MERGE INTO TELECOM_CAPSTONE.SILVER_TELECOM.personal_data_silver AS target
+USING subscriber_table_changes AS source
+ON target.SubscriberNumber = source.SubscriberNumber
+
+WHEN NOT MATCHED THEN INSERT 
+    -- Insert a new record with values from subscriber_table_changes
+     (
+        target.SubscriberNumber,
+target.Name,
+target.Address,
+target.email_id,
+target.create_timestamp
+    )
+    VALUES (
+        source.SubscriberNumber,
+        source.Name,
+        source.Address,
+        source.email_id,
+        CURRENT_TIMESTAMP()
+    );
+
+select * from personal_data_silver;
+
+//Gold Layer
+
+create or replace schema gold_telecom;
+
+USE schema gold_telecom;
+
+show tables in schema gold_telecom;
+
+CREATE or replace TABLE billing_data_gold (
+    bill_date DATE,
+    subscriberNumber NUMERIC,
+    mobile_number NUMERIC,
+    total_outstanding_amount DECIMAL
+);
+
+create or replace table subscription_data_gold (
+SubscriberNumber NUMBER,
+Name VARCHAR,
+Address VARCHAR,
+sim_number NUMBER,
+mobile_number NUMBER,
+plan_for_sim VARCHAR,
+area_from_which_sim_is_purchased VARCHAR,
+status_of_sim_purchased VARCHAR,
+email_id VARCHAR,
+subscriber_type VARCHAR,
+Date_time TIMESTAMP_NTZ,
+create_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+file_name VARCHAR,
+filedatetime TIMESTAMP_NTZ,
+    end_date TIMESTAMP_NTZ,
+    hist_flag BOOLEAN
+);
+
+create or replace table payment_data_gold (
+    subscriberNumber NUMERIC,
+    subscriber_type VARCHAR(255),
+    mode_of_payment VARCHAR(255),
+    date_payment DATE,
+    amount DECIMAL
+);
+
+create or replace table gold_telecom.cdr_data_gold (
+    mobile_number NUMERIC,
+    day_mins DECIMAL,
+    day_calls NUMERIC,
+    day_charge DECIMAL,
+    eve_mins DECIMAL,
+    eve_calls NUMERIC,
+    eve_charge DECIMAL,
+    night_mins DECIMAL,
+    night_calls NUMERIC,
+    night_charge DECIMAL,
+    intl_mins DECIMAL,
+    intl_calls NUMERIC,
+    intl_charge DECIMAL
+);
+
+//Billing Data
+//Identify Delta Data:
+SELECT *
+FROM silver_telecom.billing_data_silver
+WHERE (bill_date, subscriberNumber, mobile_number, total_outstanding_amount) NOT IN (
+    SELECT bill_date, subscriberNumber, mobile_number, total_outstanding_amount
+    FROM gold_telecom.billing_data_gold
+);
+//Insert or Merge Delta Data:
+
+INSERT INTO gold_telecom.billing_data_gold
+SELECT bill_date, subscriberNumber, mobile_number, total_outstanding_amount
+FROM silver_telecom.billing_data_silver
+WHERE (bill_date, subscriberNumber, mobile_number, total_outstanding_amount) NOT IN (
+    SELECT bill_date, subscriberNumber, mobile_number, total_outstanding_amount
+    FROM gold_telecom.billing_data_gold
+);
+
+//Subscription Data
+//Identify Delta Data:
+-- Assuming 'SubscriberNumber', 'mobile_number' are relevant columns
+SELECT *
+FROM silver_telecom.subscription_data_silver
+WHERE (SubscriberNumber, mobile_number) NOT IN (
+    SELECT SubscriberNumber, mobile_number
+    FROM gold_telecom.subscription_data_gold
+);
+
+//Insert or Merge Delta Data:
+INSERT INTO gold_telecom.subscription_data_gold
+SELECT *
+FROM silver_telecom.subscription_data_silver
+WHERE (SubscriberNumber, mobile_number) NOT IN (
+    SELECT SubscriberNumber, mobile_number
+    FROM gold_telecom.subscription_data_gold
+);
+
+//Payment Data
+//Identify Delta Data:
+
+SELECT *
+FROM silver_telecom.payment_data_silver
+WHERE (subscriberNumber, date_payment) NOT IN (
+    SELECT subscriberNumber, date_payment
+    FROM gold_telecom.payment_data_gold
+);
+
+//Insert or Merge Delta Data:
+INSERT INTO gold_telecom.payment_data_gold
+SELECT subscriberNumber,
+    subscriber_type,
+    mode_of_payment,
+    date_payment,
+    amount
+FROM silver_telecom.payment_data_silver
+WHERE (subscriberNumber, date_payment) NOT IN (
+    SELECT subscriberNumber, date_payment
+    FROM gold_telecom.payment_data_gold
+);
+
+//CDR Data
+//Identify Delta Data:
+
+SELECT *
+FROM silver_telecom.cdr_data_silver
+WHERE (mobile_number, day_mins) NOT IN (
+    SELECT mobile_number, day_mins
+    FROM gold_telecom.cdr_data_gold
+);
+
+//Insert or Merge Delta Data:
+INSERT INTO gold_telecom.cdr_data_gold
+SELECT mobile_number,
+    day_mins,
+    day_calls,
+    day_charge,
+    eve_mins,
+    eve_calls,
+    eve_charge,
+    night_mins,
+    night_calls,
+    night_charge,
+    intl_mins,
+    intl_calls,
+    intl_charge
+FROM silver_telecom.cdr_data_silver
+WHERE (mobile_number, day_mins) NOT IN (
+    SELECT mobile_number, day_mins
+    FROM gold_telecom.cdr_data_gold
+);
+
+
+
+
+
+
+
+
+
+  
